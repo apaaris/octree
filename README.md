@@ -1,4 +1,4 @@
-# A simple Octree implemenentation 
+# A simple Octree implementation 
 
 A C++ implementation of a spatial octree data structure with VTK export capabilities for 3D visualization.
 
