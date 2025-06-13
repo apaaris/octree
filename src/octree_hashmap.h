@@ -1,22 +1,30 @@
-struct Point { float x, y, z; };
+#ifndef OCTREE_HASHMAP_H
+#define OCTREE_HASHMAP_H
 
-class OctreeNode {
+#include <iostream>
+#include <vector>
+#include <unordered_map>
+#include <memory>
+#include <fstream>
+#include <iomanip>
+#include <string>
+#include "point.h"
+
+class OctreeHashMapNode {
 public:
     // Bounding box: min and max coordinates
     Point min, max;
-    // Child nodes (could be std::unique_ptr<OctreeNode>[8] or std::array)
-    OctreeNode* children[8] = {nullptr};
-    // Data (e.g., list of points or objects)
+    
+    // Child nodes stored in hashmap with octant as key
+    std::unordered_map<int, std::unique_ptr<OctreeHashMapNode>> children;
+    
+    // Data (list of points)
     std::vector<Point> points;
+    
+    // Maximum points per leaf before subdivision
+    static const size_t MAX_POINTS_PER_LEAF = 1;
 
-    OctreeNode(const Point& min, const Point& max) : min(min), max(max) {}
-
-    // Destructor to clean up memory
-    ~OctreeNode() {
-        for (int i = 0; i < 8; ++i) {
-            delete children[i];
-        }
-    }
+    OctreeHashMapNode(const Point& min, const Point& max) : min(min), max(max) {}
 
     void insert(const Point& p) {
         // Check if point is within bounds
@@ -28,17 +36,21 @@ public:
 
         if (isLeaf()) {
             points.push_back(p);
-            // Optionally subdivide if too many points
-            if (points.size() > 1) subdivide();
-        } else {
-            int idx = getOctant(p);
-            if (children[idx] == nullptr) {
-                // Create child node with new bounds
-                Point childMin, childMax;
-                calculateChildBounds(idx, childMin, childMax);
-                children[idx] = new OctreeNode(childMin, childMax);
+            // Subdivide if too many points
+            if (points.size() > MAX_POINTS_PER_LEAF) {
+                subdivide();
             }
-            children[idx]->insert(p);
+        } else {
+            int octant = getOctant(p);
+            
+            // Create child node if it doesn't exist
+            if (children.find(octant) == children.end()) {
+                Point childMin, childMax;
+                calculateChildBounds(octant, childMin, childMax);
+                children[octant] = std::make_unique<OctreeHashMapNode>(childMin, childMax);
+            }
+            
+            children[octant]->insert(p);
         }
     }
 
@@ -63,29 +75,33 @@ public:
         childMax.z = (octant & 4) ? max.z : center.z;
     }
 
-    bool isLeaf() const { return children[0] == nullptr; }
+    bool isLeaf() const { 
+        return children.empty(); 
+    }
 
     void subdivide() {
-        // Calculate center of current node
-        Point center = {
-            (min.x + max.x) / 2.0f,
-            (min.y + max.y) / 2.0f,
-            (min.z + max.z) / 2.0f
-        };
-
-        // Create children for each octant
-        for (int i = 0; i < 8; ++i) {
-            Point childMin, childMax;
-            calculateChildBounds(i, childMin, childMax);
-            children[i] = new OctreeNode(childMin, childMax);
-        }
-
-        // Move points to appropriate child
+        // Create children for each octant that has points
+        std::unordered_map<int, std::vector<Point>> octantPoints;
+        
+        // Distribute points to octants
         for (const auto& p : points) {
-            int idx = getOctant(p);
-            children[idx]->insert(p);
+            int octant = getOctant(p);
+            octantPoints[octant].push_back(p);
         }
-        points.clear();  // Clear parent's points since they are moved to children
+        
+        // Create child nodes and insert points
+        for (const auto& [octant, octantPointList] : octantPoints) {
+            Point childMin, childMax;
+            calculateChildBounds(octant, childMin, childMax);
+            children[octant] = std::make_unique<OctreeHashMapNode>(childMin, childMax);
+            
+            for (const auto& p : octantPointList) {
+                children[octant]->insert(p);
+            }
+        }
+        
+        // Clear parent's points since they are moved to children
+        points.clear();
     }
 
     int getOctant(const Point& p) const {
@@ -107,13 +123,12 @@ public:
         std::cout << indent << "Node bounds: (" << min.x << "," << min.y << "," << min.z 
                   << ") to (" << max.x << "," << max.y << "," << max.z << ")" << std::endl;
         std::cout << indent << "Points: " << points.size() << std::endl;
+        std::cout << indent << "Active children: " << children.size() << std::endl;
         
         if (!isLeaf()) {
-            for (int i = 0; i < 8; ++i) {
-                if (children[i] != nullptr) {
-                    std::cout << indent << "Child " << i << ":" << std::endl;
-                    children[i]->print(depth + 1);
-                }
+            for (const auto& [octant, child] : children) {
+                std::cout << indent << "Child octant " << octant << ":" << std::endl;
+                child->print(depth + 1);
             }
         }
     }
@@ -126,12 +141,8 @@ public:
         }
         
         // Recursively collect from children
-        if (!isLeaf()) {
-            for (int i = 0; i < 8; ++i) {
-                if (children[i] != nullptr) {
-                    children[i]->collectAllPoints(allPoints);
-                }
-            }
+        for (const auto& [octant, child] : children) {
+            child->collectAllPoints(allPoints);
         }
     }
 
@@ -142,12 +153,8 @@ public:
         levels.push_back(currentLevel);
         
         // Recursively collect from children
-        if (!isLeaf()) {
-            for (int i = 0; i < 8; ++i) {
-                if (children[i] != nullptr) {
-                    children[i]->collectNodeBoxes(boxes, levels, currentLevel + 1);
-                }
-            }
+        for (const auto& [octant, child] : children) {
+            child->collectNodeBoxes(boxes, levels, currentLevel + 1);
         }
     }
 
@@ -169,7 +176,7 @@ public:
 
         // Write VTK header
         file << "# vtk DataFile Version 3.0\n";
-        file << "Octree Visualization\n";
+        file << "Octree Visualization (HashMap Implementation)\n";
         file << "ASCII\n";
         file << "DATASET UNSTRUCTURED_GRID\n\n";
 
@@ -206,13 +213,13 @@ public:
         file << "\nCELLS " << totalCells << " " << totalCellData << "\n";
         
         // Write point cells (vertices)
-        for (int i = 0; i < allPoints.size(); ++i) {
+        for (size_t i = 0; i < allPoints.size(); ++i) {
             file << "1 " << i << "\n";
         }
         
         // Write box cells (hexahedrons)
         int baseIdx = allPoints.size();
-        for (int i = 0; i < boxes.size(); ++i) {
+        for (size_t i = 0; i < boxes.size(); ++i) {
             int start = baseIdx + i * 8;
             file << "8 " << start << " " << (start+1) << " " << (start+2) << " " << (start+3)
                  << " " << (start+4) << " " << (start+5) << " " << (start+6) << " " << (start+7) << "\n";
@@ -222,12 +229,12 @@ public:
         file << "\nCELL_TYPES " << totalCells << "\n";
         
         // Point cells (VTK_VERTEX = 1)
-        for (int i = 0; i < allPoints.size(); ++i) {
+        for (size_t i = 0; i < allPoints.size(); ++i) {
             file << "1\n";
         }
         
         // Hexahedron cells (VTK_HEXAHEDRON = 12)
-        for (int i = 0; i < boxes.size(); ++i) {
+        for (size_t i = 0; i < boxes.size(); ++i) {
             file << "12\n";
         }
 
@@ -237,7 +244,7 @@ public:
         file << "LOOKUP_TABLE default\n";
         
         // Points are at level -1 (to distinguish from boxes)
-        for (int i = 0; i < allPoints.size(); ++i) {
+        for (size_t i = 0; i < allPoints.size(); ++i) {
             file << "-1\n";
         }
         
@@ -250,4 +257,71 @@ public:
         std::cout << "Octree exported to " << filename << std::endl;
         std::cout << "Open this file in ParaView to visualize the octree structure!" << std::endl;
     }
+
+    // Query methods
+    std::vector<Point> rangeQuery(const Point& queryMin, const Point& queryMax) const {
+        std::vector<Point> result;
+        rangeQueryRecursive(queryMin, queryMax, result);
+        return result;
+    }
+
+    void rangeQueryRecursive(const Point& queryMin, const Point& queryMax, std::vector<Point>& result) const {
+        // Check if this node's bounding box intersects with query range
+        if (!boxIntersects(queryMin, queryMax)) {
+            return;
+        }
+
+        // Check points in this node
+        for (const auto& p : points) {
+            if (p.x >= queryMin.x && p.x <= queryMax.x &&
+                p.y >= queryMin.y && p.y <= queryMax.y &&
+                p.z >= queryMin.z && p.z <= queryMax.z) {
+                result.push_back(p);
+            }
+        }
+
+        // Recursively search children
+        for (const auto& [octant, child] : children) {
+            child->rangeQueryRecursive(queryMin, queryMax, result);
+        }
+    }
+
+    bool boxIntersects(const Point& queryMin, const Point& queryMax) const {
+        return !(max.x < queryMin.x || min.x > queryMax.x ||
+                 max.y < queryMin.y || min.y > queryMax.y ||
+                 max.z < queryMin.z || min.z > queryMax.z);
+    }
+
+    // Get statistics about the octree
+    void getStatistics(int& totalNodes, int& leafNodes, int& totalPoints, int& maxDepth, int currentDepth = 0) const {
+        totalNodes++;
+        totalPoints += points.size();
+        maxDepth = std::max(maxDepth, currentDepth);
+
+        if (isLeaf()) {
+            leafNodes++;
+        } else {
+            for (const auto& [octant, child] : children) {
+                child->getStatistics(totalNodes, leafNodes, totalPoints, maxDepth, currentDepth + 1);
+            }
+        }
+    }
+
+    void printStatistics() const {
+        int totalNodes = 0, leafNodes = 0, totalPoints = 0, maxDepth = 0;
+        getStatistics(totalNodes, leafNodes, totalPoints, maxDepth);
+        
+        std::cout << "=== Octree Statistics ===" << std::endl;
+        std::cout << "Total nodes: " << totalNodes << std::endl;
+        std::cout << "Leaf nodes: " << leafNodes << std::endl;
+        std::cout << "Internal nodes: " << (totalNodes - leafNodes) << std::endl;
+        std::cout << "Total points: " << totalPoints << std::endl;
+        std::cout << "Maximum depth: " << maxDepth << std::endl;
+        std::cout << "Average points per leaf: " << (leafNodes > 0 ? (float)totalPoints / leafNodes : 0) << std::endl;
+    }
 };
+
+// Convenience typedef for the hashmap octree
+using OctreeHashMap = OctreeHashMapNode;
+
+#endif // OCTREE_HASHMAP_H 
